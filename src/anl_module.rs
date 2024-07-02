@@ -8,7 +8,6 @@ use memmap2::Mmap;
 //use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelBridge;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use rayon::prelude::*;
 use rkyv::ser::serializers::{
     AlignedSerializer, AllocScratch, CompositeSerializer, FallbackScratch, HeapScratch,
     SharedSerializeMap,
@@ -157,7 +156,7 @@ impl<'a, E: Archive, R> Anl<'a, E, R> {
     }
 }
 
-impl<'a, E: Archive, R> Anl<'a, E, R>
+impl<'a, E: Archive + 'a, R> Anl<'a, E, R>
 where
     DataSet<E>: Serialize<
         CompositeSerializer<
@@ -172,7 +171,7 @@ where
     //R: + Send,
     E: Archive,
     <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
-    DataCollectionIter<E>: Send,
+    DataCollectionIter<'a, E>: Send,
     R: std::marker::Send,
     dyn AnlModule<E, R> + 'a: Send + Sync,
     //DataCollectionIter<'a, E>: Iterator<Item = E>,
@@ -236,7 +235,7 @@ where
 
         let mem_mapped_files = Anl::<E, R>::map_data(in_dir.as_path());
 
-        let data_set: ArchivedData<E> = DataCollection::new(&mem_mapped_files);
+        let data_set: ArchivedData<'a, E> = DataCollection::new(&mem_mapped_files);
 
         self.run_real_analysis(&data_set, real_out_dir.unwrap());
 
@@ -248,7 +247,7 @@ where
     }
 
     //fn run_real_analysis(&mut self, dataset: &ArchivedData<E>, out_dir: PathBuf) {
-    fn run_real_analysis(&self, dataset: &ArchivedData<E>, out_dir: PathBuf) {
+    fn run_real_analysis(&self, dataset: &'a ArchivedData<E>, out_dir: PathBuf) {
         let anl_module = self.anl_module.as_ref().expect("No module attatched");
 
         Anl::<E, R>::make_announcment("INITIALIZE");
