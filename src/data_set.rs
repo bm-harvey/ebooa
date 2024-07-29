@@ -1,11 +1,19 @@
+#![allow(unused_imports)]
 use memmap2::Mmap;
 use rand::Rng;
 use rkyv::validation::validators::DefaultValidator;
 use rkyv::{archived_root, check_archived_root};
 use rkyv::{Archive, CheckBytes, Deserialize, Serialize};
+use std::fs::File;
 use std::marker::PhantomData;
+use std::path::Path;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::RwLock;
+//
+// KYLE
 
-pub type ArchivedData<'a, E> = DataCollection<'a, <DataSet<E> as Archive>::Archived, E>;
+pub type ArchivedData<'a, E> = DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>;
 
 /// A DataSet is a collection of events of type E. Requires that E is `rkyv::{Archive, Serialize,
 /// Deserialize}` to work properly. Generally, one `DataSet<E>` is written per file, and there can be
@@ -49,7 +57,7 @@ impl<E> DataSet<E>
 where
     E: Archive,
 {
-    pub fn read_from_rkyv(mmap: &Mmap) -> &rkyv::Archived<Self> {
+    pub fn read_from_rkyv(mmap: &Mmap) -> &rkyv::Archived<DataSet<E>> {
         unsafe { archived_root::<DataSet<E>>(&mmap[..]) }
     }
 }
@@ -59,7 +67,10 @@ where
     E: Archive,
     <E as Archive>::Archived: CheckBytes<DefaultValidator<'a>>,
 {
-    pub fn validated_read_from_rkyv(mmap: &'a Mmap) -> &'a rkyv::Archived<Self> {
+    pub fn validated_read_from_rkyv(mmap: &'a Mmap) -> &rkyv::Archived<Self> {
+        //let mmap = Rc::clone(&mmap);
+        //let mmap = mmap.as_ref();
+
         check_archived_root::<DataSet<E>>(&mmap[..])
             .expect("There was a problem validating the data")
     }
@@ -86,10 +97,7 @@ impl<E: Archive> ArchivedDataSet<E> {
     }
 }
 
-impl<E: Archive> ArchivedDataSet<E>
-//where
-//<E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
-{
+impl<E: Archive> ArchivedDataSet<E> {
     pub fn archived_event_by_idx(&self, idx: usize) -> Option<&<E as Archive>::Archived> {
         if idx >= self.len() {
             None
@@ -120,33 +128,77 @@ where
     }
 }
 
-pub struct DataCollection<'a, D, E> {
+pub struct DataSetCollection<'a, D, E> {
     data_sets: Vec<&'a D>,
-    mem_maps: &'a Vec<Mmap>,
+    mem_maps: Vec<Mmap>,
     num_accumulated_events: Vec<usize>,
     phantom: PhantomData<E>,
 }
 
-impl<'a, E: Archive> DataCollection<'a, <DataSet<E> as Archive>::Archived, E> {
-    pub fn new(
-        mem_maps: &'a Vec<Mmap>,
-    ) -> DataCollection<'a, <DataSet<E> as Archive>::Archived, E> {
-        let mut result = Self {
-            data_sets: Vec::new(),
-            num_accumulated_events: Vec::new(),
-            mem_maps,
-            phantom: PhantomData,
-        };
+impl<'a, E: Archive> DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E> {
+    pub fn new(mem_maps: Vec<Mmap>) -> DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E> {
+        let data_sets = Vec::new();
+        let num_accumulated_events = Vec::new();
 
+        //let mut result = Self {
+        //data_sets: Vec::new(),
+        //num_accumulated_events: Vec::new(),
+        //mem_maps: mem_maps,
+        //phantom: PhantomData,
+        //};
+
+        //let mut num_events = 0;
+        //for m in mem_maps.iter() {
+        ////for m in result.mem_maps.iter() {
+        //let ds: &ArchivedDataSet<E> = unsafe { rkyv::archived_root::<DataSet<E>>(m) };
+        //num_events += ds.len();
+        //data_sets.push(ds);
+        //num_accumulated_events.push(num_events);
+        //}
+
+        Self {
+            data_sets,
+            mem_maps,
+            num_accumulated_events,
+            phantom: PhantomData,
+        }
+    }
+
+    pub fn init(&'a mut self) {
         let mut num_events = 0;
-        for m in result.mem_maps.iter() {
+        for m in self.mem_maps.iter() {
             let ds: &ArchivedDataSet<E> = unsafe { rkyv::archived_root::<DataSet<E>>(m) };
             num_events += ds.len();
-            result.data_sets.push(ds);
-            result.num_accumulated_events.push(num_events);
+            self.data_sets.push(ds);
+            self.num_accumulated_events.push(num_events);
+        }
+    }
+
+    pub fn new_from_path(directory: &Path) -> Self {
+        let mut mmaps = Vec::new();
+
+        let paths = std::fs::read_dir(directory).expect("problem opening input directory");
+        for path in paths {
+            let path = path.expect("Ivalid path").path();
+
+            let path_name = path
+                .to_str()
+                .expect("Path could not be interpretted as str");
+
+            let length = path_name.len();
+            if !path_name[length - 5..].contains(".rkyv") {
+                // if the file is not marked as an rkyv file, don't try to read it as one
+                continue;
+            }
+
+            let input_file = File::open(path_name).expect("File could not be found");
+
+            let memory_map =
+                unsafe { Mmap::map(&input_file).expect("Input file could not be memory mapped") };
+            mmaps.push(memory_map);
         }
 
-        result
+        Self::new(mmaps)
     }
 
     pub fn len(&self) -> usize {
@@ -170,7 +222,7 @@ impl<'a, E: Archive> DataCollection<'a, <DataSet<E> as Archive>::Archived, E> {
     }
 }
 
-impl<'a, E: Archive> DataCollection<'a, <DataSet<E> as Archive>::Archived, E>
+impl<'a, E: Archive> DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>
 where
     <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
 {
@@ -260,8 +312,18 @@ where
         DataCollectionIter::<E>::new(self)
     }
 
-    pub fn archived_iter(&'a self) -> ArchivedDataCollectionIter<'a, E> {
+    pub fn archived_iter<'b>(&'a self) -> ArchivedDataCollectionIter<'b, E> 
+        where 'a : 'b
+    {
         ArchivedDataCollectionIter::<E>::new(self)
+    }
+
+    pub fn limited_archived_iter(
+        &'a self,
+        start: usize,
+        stop: usize,
+    ) -> LimitedArchivedDataCollectionIter<'a, E> {
+        LimitedArchivedDataCollectionIter::<E>::new(self, start, stop)
     }
 }
 
@@ -269,7 +331,7 @@ pub struct DataCollectionIter<'a, E: Archive>
 where
     <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
 {
-    data: &'a DataCollection<'a, <DataSet<E> as Archive>::Archived, E>,
+    data: &'a DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>,
     data_set: Option<&'a ArchivedDataSet<E>>,
     data_set_idx: usize,
     idx: usize,
@@ -279,7 +341,8 @@ impl<'a, E: Archive> DataCollectionIter<'a, E>
 where
     <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
 {
-    pub fn new(data: &'a DataCollection<'a, <DataSet<E> as Archive>::Archived, E>) -> Self {
+    pub fn new(data: &'a ArchivedDataSet<E>) -> Self{
+    //pub fn new(data: &'a DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>) -> Self {
         Self {
             data,
             data_set: data.data_set_by_idx(0),
@@ -328,7 +391,7 @@ pub struct ArchivedDataCollectionIter<'a, E: Archive>
 where
     <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
 {
-    data: &'a DataCollection<'a, <DataSet<E> as Archive>::Archived, E>,
+    data: &'a DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>,
     data_set: Option<&'a ArchivedDataSet<E>>,
     data_set_idx: usize,
     idx: usize,
@@ -338,7 +401,7 @@ impl<'a, E: Archive> ArchivedDataCollectionIter<'a, E>
 where
     <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
 {
-    pub fn new(data: &'a DataCollection<'a, <DataSet<E> as Archive>::Archived, E>) -> Self {
+    pub fn new(data: &'a DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>) -> Self {
         Self {
             data,
             data_set: data.data_set_by_idx(0),
@@ -378,35 +441,69 @@ where
     }
 }
 
-pub struct FilteredArchivedData<'a, E: Archive + 'a> {
-    data: &'a ArchivedData<'a, E>,
-    idxs: &'a Vec<usize>,
-}
-
-impl<'a, E: Archive + 'a> FilteredArchivedData<'a, E> {
-    pub fn new(data: &'a ArchivedData<'a, E>, idxs: &'a Vec<usize>) -> Self {
-        assert!(idxs.len() <= data.len());
-        Self { data, idxs }
-    }
-    pub fn len(&self) -> usize {
-        self.idxs.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.idxs.is_empty()
-    }
-}
-impl<'a, E: Archive + 'a> FilteredArchivedData<'a, E>
+pub struct LimitedArchivedDataCollectionIter<'a, E: Archive>
 where
     <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
 {
-    pub fn event_by_idx(&self, idx: usize) -> Option<E> {
-        let idx = self.idxs[idx];
-        self.data.event_by_idx(idx)
-    }
+    data: &'a DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>,
+    data_set: Option<&'a ArchivedDataSet<E>>,
+    data_set_idx: usize,
+    idx: usize,
+    stop_idx: usize,
+}
 
-    pub fn random_event(&self) -> E {
-        let idx = rand::thread_rng().gen_range(0..self.len());
-        self.event_by_idx(idx).unwrap()
+impl<'a, E: Archive> LimitedArchivedDataCollectionIter<'a, E>
+where
+    <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
+{
+    pub fn new(
+        data: &'a DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>,
+        start_idx: usize,
+        stop_idx: usize,
+    ) -> Self {
+        Self {
+            data,
+            data_set: data.data_set_by_idx(0),
+            data_set_idx: 0,
+            idx: start_idx,
+            stop_idx: std::cmp::min(stop_idx, data.len()),
+        }
+    }
+}
+
+impl<'a, E> Iterator for LimitedArchivedDataCollectionIter<'a, E>
+where
+    E: Archive,
+    <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
+{
+    type Item = (&'a <E as Archive>::Archived, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.data_set_idx >= self.data.num_sets() {
+            return None;
+        }
+
+        self.data_set?;
+
+        if self.idx == self.stop_idx {
+            return None;
+        }
+
+        if self.idx >= self.data_set.unwrap().len() {
+            self.idx = 0;
+            self.data_set_idx += 1;
+            self.data_set = self.data.data_set_by_idx(self.data_set_idx);
+            match self.data_set {
+                None => None,
+                Some(_) => self.next(),
+            }
+        } else {
+            let idx = self.idx;
+            self.idx += 1;
+            Some((
+                self.data_set.unwrap().archived_events().get(idx).unwrap(),
+                idx,
+            ))
+        }
     }
 }

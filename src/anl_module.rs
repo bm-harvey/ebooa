@@ -1,5 +1,10 @@
-use crate::data_set::DataCollectionIter;
-use crate::data_set::{ArchivedData, DataCollection, DataSet, FilteredArchivedData};
+#![allow(dead_code)]
+#![allow(unused_imports)]
+use crate::data_set2;
+use crate::data_set2::ArchivedDataCollectionIter;
+//use crate::data_set2::DataCollectionIter;
+//use crate::data_set2::LimitedArchivedDataCollectionIter;
+use crate::data_set2::{DataFileCollection, DataSet, DataSetCollection};
 use colored::Colorize;
 use indicatif::ParallelProgressIterator;
 //use indicatif::ProgressBar;
@@ -8,6 +13,7 @@ use memmap2::Mmap;
 //use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelBridge;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use rayon::prelude::*;
 use rkyv::ser::serializers::{
     AlignedSerializer, AllocScratch, CompositeSerializer, FallbackScratch, HeapScratch,
     SharedSerializeMap,
@@ -24,10 +30,12 @@ use std::{
 };
 use thousands::Separable;
 
+type A<E> = <E as Archive>::Archived;
+
 /// The generic form of an event based analysis module. An `Analysis` or `MixedAnalysis` can take in one or more of
 /// these modules and manage the calling of all of these functions for you in a systematic way, or
 /// one could use `AnalysisModule`s on their own right for organizational purposes.
-pub trait AnlModule<E, R> {
+pub trait AnlModule<E: Archive, R>: Send + Sync {
     /// Required name of the module, can be used for naming outputs or keeping track of outputs
     fn name(&self) -> String;
 
@@ -39,12 +47,12 @@ pub trait AnlModule<E, R> {
     /// Pre filter events before event is called. This work could be done in the begining of
     /// `analyze_event`, but this is sometimes cleaner, generally it is better to use an
     /// `EventFilter` though for broad analysis.
-    fn filter_event(&self, _event: &E, _idx: usize) -> bool {
+    fn filter_event(&self, _event: &<E as Archive>::Archived, _idx: usize) -> bool {
         true
     }
 
     /// Runs once per event
-    fn analyze_event(&self, _event: &E, _idx: usize) -> Option<R>;
+    fn analyze_event(&self, _event: &A<E>, _idx: usize) -> Option<R>;
 
     ///
     fn handle_result_chunk(&mut self, results: &mut [R]);
@@ -57,27 +65,9 @@ pub trait AnlModule<E, R> {
     fn finalize(&mut self, _output_directory: &Path) {}
 }
 
-pub trait EventFilter<E>: Send + Sync {
-    ///
-    fn name(&self) -> String;
-
-    /// Whether or not to accept an event into the mixed analysis. By default, all events are
-    /// accepted. Using this function before trying to generate events can be a massive efficiency
-    /// gain or simply just necassary, dependng on the anaysis being done.
-    fn filter_event(&self, _event: &E, _idx: usize) -> bool;
-}
-
-/// Mixed Analysis is very similar to `Analysis` in nature and in use. It takes in exactly one
-/// `EventMixer` and any number of `AnalysisModule`s. The events in the dataset get read opened.
-/// Events that pass the filter get written to th output directory, and then that dataset is opened
-/// for analysis. Instead of looping over all of the events in the filtered data, the filtered data
-/// set is used by the EventMixer to generate events, which are then passsed to the
-/// `AnalysisModule`s.
-pub struct Anl<'a, E: Archive, R> {
+pub struct Anl<E: Archive, R> {
     /// The analysis scripts used to analyze the generated events
-    anl_module: Option<Arc<RwLock<dyn 'a + AnlModule<E, R>>>>,
-    /// What actually does the filtering
-    filter: Option<Arc<RwLock<dyn EventFilter<E>>>>,
+    anl_module: Option<Arc<RwLock<Box<dyn AnlModule<E, R>>>>>,
     /// Where to find the actual input data. This value needs to get set manually, otherwise
     /// `run_analysis` will panic.
     input_directory: Option<String>,
@@ -85,40 +75,33 @@ pub struct Anl<'a, E: Archive, R> {
     /// location, using the `self.mixer.name()` as the subdirectory name. This value needs to get
     /// set manually, otherwise `run_analysis` will panic.
     output_directory: Option<String>,
-    ///
-    max_raw: usize,
-    ///
+    //
     update_interval: usize,
 }
 
-impl<'a, E: Archive, R> Default for Anl<'a, E, R> {
+impl<E: Archive, R> Default for Anl<E, R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<'a, E: Archive, R> Anl<'a, E, R> {
+impl<E: Archive, R> Anl<E, R> {
     /// create a new `MixedAnalysis` from a boxed `EventMixer`
     pub fn new() -> Self {
         Anl::<E, R> {
-            filter: None,
             anl_module: None,
             input_directory: None,
             output_directory: None,
-            max_raw: usize::MAX,
             update_interval: 10_000,
         }
     }
 
     /// Add an anlsysis module to use for the unmixed data. These analysis modules are not
     /// automatically applied to the mixed events
-    pub fn with_anl_module<M: AnlModule<E, R> + 'a>(mut self, module: M) -> Self {
-        self.anl_module = Some(Arc::new(RwLock::new(module)));
-        self
-    }
-
-    pub fn with_filter<F: EventFilter<E> + 'static>(mut self, filter: F) -> Self {
-        self.filter = Some(Arc::new(RwLock::new(filter)));
+    pub fn with_anl_module(mut self, module: impl AnlModule<E, R> + 'static) -> Self {
+        //pub fn with_anl_module<M:  AnlModule<E, R> + 'static>(mut self, module: M) -> Self {
+        let module: Arc<RwLock<Box<dyn AnlModule<E, R>>>> = Arc::new(RwLock::new(Box::new(module)));
+        self.anl_module = Some(module);
         self
     }
 
@@ -132,11 +115,6 @@ impl<'a, E: Archive, R> Anl<'a, E, R> {
     /// Subdirectories will be generated within this directory.
     pub fn with_output_directory(mut self, input: &str) -> Self {
         self.output_directory = Some(input.into());
-        self
-    }
-
-    pub fn with_max_real_events(mut self, real_events: usize) -> Self {
-        self.max_raw = real_events;
         self
     }
 
@@ -156,98 +134,21 @@ impl<'a, E: Archive, R> Anl<'a, E, R> {
     }
 }
 
-impl<'a, E: Archive + 'a, R> Anl<'a, E, R>
+//DataSet<E>: Serialize<
+//CompositeSerializer<
+//AlignedSerializer<AlignedVec>,
+//FallbackScratch<HeapScratch<256>, AllocScratch>,
+//SharedSerializeMap,
+//>,
+//>,
+impl<'a, E, R> Anl<E, R>
 where
-    DataSet<E>: Serialize<
-        CompositeSerializer<
-            AlignedSerializer<AlignedVec>,
-            FallbackScratch<HeapScratch<256>, AllocScratch>,
-            SharedSerializeMap,
-        >,
-    >,
-    <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
-    <DataSet<E> as Archive>::Archived: Sync + 'a,
-    E: Sync + Send,
-    //R: + Send,
     E: Archive,
-    <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
-    DataCollectionIter<'a, E>: Send,
-    R: std::marker::Send,
-    dyn AnlModule<E, R> + 'a: Send + Sync,
-    //DataCollectionIter<'a, E>: Iterator<Item = E>,
+    <E as Archive>::Archived: Sync,
+    R: Send,
+    //R: Sync,
 {
-    fn generate_filtered_indices(&self, in_dir: &Path, out_dir: &Path) {
-        println!("{}", out_dir.to_str().unwrap());
-        let timer = std::time::Instant::now();
-        if self.filter.is_none() {
-            return;
-        }
-
-        // Create a data collection for the original data.
-        let memory_maps = Anl::<E, R>::map_data(in_dir);
-        let data_collection: DataCollection<<DataSet<E> as Archive>::Archived, E> =
-            DataCollection::new(&memory_maps);
-        //let data_collection = DataCollection::new(&memory_maps);
-
-        let max_raw = usize::min(self.max_raw, data_collection.len());
-        let data_collection = Arc::new(RwLock::new(data_collection));
-        let data_set = Arc::new(Mutex::new(DataSet::<usize>::new()));
-        //let output_size = self.filtered_output_size;
-
-        let num_found = Arc::new(Mutex::new(0));
-
-        let filter = self.filter.as_ref().unwrap().clone();
-
-        //let update_interval = self.update_interval;
-        (0..max_raw).into_par_iter().progress().for_each(|idx| {
-            let event = data_collection.read().unwrap().event_by_idx(idx).unwrap();
-            if filter.read().unwrap().filter_event(&event, 0) {
-                let mut data_set = data_set.lock().unwrap();
-                data_set.add_event(idx);
-                let mut num_found = num_found.lock().unwrap();
-                *num_found += 1;
-            }
-        });
-
-        let mut data_set = data_set.lock().unwrap();
-
-        println!("time to filter = {} s", timer.elapsed().as_secs());
-        Anl::<E, R>::generate_filtered_idx_file(out_dir, &mut data_set)
-    }
-    fn generate_filtered_idx_file(out_dir: &Path, data_set: &mut DataSet<usize>) {
-        let file_name: String = String::from("idx.rkyv");
-        let out_file_name: String = out_dir.join(file_name).to_str().unwrap().into();
-        println!("Generating file:{}", out_file_name);
-        let out_file = File::create(out_file_name)
-            .expect("A filtered rkyv'ed idx file could not be generated");
-        let mut buffer = BufWriter::new(out_file);
-        buffer
-            .write_all(rkyv::to_bytes::<_, 256>(data_set).unwrap().as_slice())
-            .unwrap();
-        data_set.clear();
-    }
-
-    pub fn run(&mut self) {
-        // Manage directories
-
-        let out_dir_parent = self.output_directory.clone();
-        let (in_dir, real_out_dir) = self.manage_output_paths();
-
-        let mem_mapped_files = Anl::<E, R>::map_data(in_dir.as_path());
-
-        let data_set: ArchivedData<'a, E> = DataCollection::new(&mem_mapped_files);
-
-        self.run_real_analysis(&data_set, real_out_dir.unwrap());
-
-        Anl::<E, R>::make_announcment("DONE");
-        println!("Output Directory : {}", out_dir_parent.unwrap());
-    }
-    fn should_run_real_analysis(&self) -> bool {
-        self.anl_module.is_some()
-    }
-
-    //fn run_real_analysis(&mut self, dataset: &ArchivedData<E>, out_dir: PathBuf) {
-    fn run_real_analysis(&self, dataset: &'a ArchivedData<E>, out_dir: PathBuf) {
+    fn run_real_analysis(&self, in_dir: PathBuf, out_dir: PathBuf) {
         let anl_module = self.anl_module.as_ref().expect("No module attatched");
 
         Anl::<E, R>::make_announcment("INITIALIZE");
@@ -257,34 +158,60 @@ where
             .initialize(&out_dir);
 
         Anl::<E, R>::make_announcment("EVENT LOOP");
-        let time_in_event_s: f64 = 0.;
-        let start_outer = std::time::Instant::now();
-        //
+
+        let mut result_chunk = {
+            let anl = anl_module.read().expect("Failed to get read lock");
+
+            let file_set = DataFileCollection::new_from_path(in_dir.as_path());
+
+            {
+                let data_set = file_set.datasets::<E>();
+                data_set
+                    .archived_iter()
+                    .enumerate()
+                    .par_bridge()
+                    .filter(|(idx, event)| anl.filter_event(&event, *idx))
+                    .map(|(idx, event)| anl.analyze_event(&event, idx))
+                    .filter_map(|res| res)
+                    .collect::<Vec<R>>()
+            }
+        };
 
         {
-            let lock = anl_module.read().expect("Failed to get read lock");
-
-            let results = dataset
-                .iter()
-                .enumerate()
-                .par_bridge()
-                .filter(|(idx, event)| lock.filter_event(&event, *idx))
-                .map(|(idx, event)| lock.analyze_event(&event, idx))
-                .filter_map(|res| res)
-                .collect::<Vec<R>>();
+            // This gives
+            let mut anl = anl_module.write().expect("Failed to get write lock");
+            anl.handle_result_chunk(&mut result_chunk);
         }
-        //
-        println!("Time in analyze_event functions: {} s", time_in_event_s);
-        println!(
-            "Time in event loop: {} s",
-            start_outer.elapsed().as_secs_f64()
-        );
 
         Anl::<E, R>::make_announcment("FINALIZE");
         anl_module
             .write()
             .expect("Failed to get write lock")
             .finalize(&out_dir);
+    }
+
+    pub fn run(&mut self) {
+        // Manage directories
+
+        let out_dir_parent = self.output_directory.clone();
+        let (in_dir, out_dir) = self.manage_output_paths();
+
+        //let mem_mapped_files = Anl::<E, R>::map_data(in_dir.as_path());
+
+        //let data_set = DataSetCollection::new_from_path(in_dir.as_path());
+        //let data_set: ArchivedData<E> = DataSetCollection::new_from_path(in_dir.as_path());
+        //let data_set: ArchivedData<'b, E> = DataSetCollection::new_from_path(in_dir.as_path());
+
+        //let data_set: ArchivedData<E> = DataSetCollection::new(mem_mapped_files);
+
+        self.run_real_analysis(in_dir, out_dir.unwrap());
+
+        Anl::<E, R>::make_announcment("DONE");
+        println!("Output Directory : {}", out_dir_parent.unwrap());
+    }
+
+    fn should_run_real_analysis(&self) -> bool {
+        self.anl_module.is_some()
     }
 
     #[allow(dead_code)]
@@ -336,11 +263,6 @@ where
                 )
             });
         }
-
-        let out_dir = match &self.filter {
-            None => out_dir.join("all_events"),
-            Some(filter) => out_dir.join(filter.read().unwrap().name()),
-        };
 
         if !out_dir.is_dir() {
             create_dir(&out_dir).expect("Output directory could not be created");
