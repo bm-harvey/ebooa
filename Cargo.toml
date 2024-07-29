@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "4.5.11", features = ["derive"] }
 colored = "2.1.0"
 indicatif = { version = "0.17.8", features = ["improved_unicode", "rayon"] }
 memmap2 = "0.9.4"
 rand = "0.8.5"
 rayon = "1.10.0"
 rkyv = { version = "0.7.44", features = ["validation"] }
+rkyv_impl = "0.2.2"
 thousands = "0.2.0"

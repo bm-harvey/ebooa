@@ -6,7 +6,7 @@ use crate::data_set2::ArchivedDataCollectionIter;
 //use crate::data_set2::LimitedArchivedDataCollectionIter;
 use crate::data_set2::{DataFileCollection, DataSet, DataSetCollection};
 use colored::Colorize;
-use indicatif::ParallelProgressIterator;
+use indicatif::{ParallelProgressIterator, ProgressIterator};
 //use indicatif::ProgressBar;
 //use indicatif::ProgressIterator;
 use memmap2::Mmap;
@@ -42,7 +42,7 @@ pub trait AnlModule<E: Archive, R>: Send + Sync {
     /// Runs before the event loop. The output directory is passed in case the module generates
     /// output that should be buffered and written during analysis rather than holding on to all of
     /// the data in memory.
-    fn initialize(&mut self, _output_directory: &Path) {}
+    fn initialize(&mut self, _output_directory: Option<&Path>) {}
 
     /// Pre filter events before event is called. This work could be done in the begining of
     /// `analyze_event`, but this is sometimes cleaner, generally it is better to use an
@@ -55,14 +55,14 @@ pub trait AnlModule<E: Archive, R>: Send + Sync {
     fn analyze_event(&self, _event: &A<E>, _idx: usize) -> Option<R>;
 
     ///
-    fn handle_result_chunk(&mut self, results: &mut [R]);
+    fn handle_result_chunk(&mut self, results: &mut Vec<R>);
 
     /// Place to put periodic print statements every once in a while (interval determined by the
     /// user)
     fn report(&mut self) {}
 
     /// Runs after the event loop
-    fn finalize(&mut self, _output_directory: &Path) {}
+    fn finalize(&mut self, _output_directory: Option<&Path>) {}
 }
 
 pub struct Anl<E: Archive, R> {
@@ -70,11 +70,11 @@ pub struct Anl<E: Archive, R> {
     anl_module: Option<Arc<RwLock<Box<dyn AnlModule<E, R>>>>>,
     /// Where to find the actual input data. This value needs to get set manually, otherwise
     /// `run_analysis` will panic.
-    input_directory: Option<String>,
+    input_directory: Option<PathBuf>,
     /// Where to ouput data to. The data will actually be written to a subdirectory of this
     /// location, using the `self.mixer.name()` as the subdirectory name. This value needs to get
     /// set manually, otherwise `run_analysis` will panic.
-    output_directory: Option<String>,
+    output_directory: Option<PathBuf>,
     //
     update_interval: usize,
 }
@@ -107,14 +107,14 @@ impl<E: Archive, R> Anl<E, R> {
 
     /// A directory containing the raw `rkyv::Archived` data.
     pub fn with_input_directory(mut self, input: &str) -> Self {
-        self.input_directory = Some(input.into());
+        self.input_directory = Some(Path::new(input).to_path_buf());
         self
     }
 
     /// Directory where the output data should be written.
     /// Subdirectories will be generated within this directory.
     pub fn with_output_directory(mut self, input: &str) -> Self {
-        self.output_directory = Some(input.into());
+        self.output_directory = Some(Path::new(input).to_path_buf());
         self
     }
 
@@ -125,11 +125,11 @@ impl<E: Archive, R> Anl<E, R> {
         self
     }
 
-    pub fn input_directory(&self) -> Option<&str> {
+    pub fn input_directory(&self) -> Option<&Path> {
         self.input_directory.as_deref()
     }
 
-    pub fn output_directory(&self) -> Option<&str> {
+    pub fn output_directory(&self) -> Option<&Path> {
         self.output_directory.as_deref()
     }
 }
@@ -148,66 +148,63 @@ where
     R: Send,
     //R: Sync,
 {
-    fn run_real_analysis(&self, in_dir: PathBuf, out_dir: PathBuf) {
+    pub fn run(&mut self) {
         let anl_module = self.anl_module.as_ref().expect("No module attatched");
+        let in_dir = if let Some(path) = self.input_directory() {
+            path
+        } else {
+            panic!("No input directory")
+        };
 
         Anl::<E, R>::make_announcment("INITIALIZE");
+        let now = std::time::Instant::now();
         anl_module
             .write()
             .expect("Failed to get write lock")
-            .initialize(&out_dir);
+            .initialize(self.output_directory());
+        println!("Initialize took {}s", now.elapsed().as_secs_f64());
 
         Anl::<E, R>::make_announcment("EVENT LOOP");
+        let now = std::time::Instant::now();
 
         let mut result_chunk = {
             let anl = anl_module.read().expect("Failed to get read lock");
 
-            let file_set = DataFileCollection::new_from_path(in_dir.as_path());
+            let file_set = DataFileCollection::new_from_path(in_dir);
 
             {
                 let data_set = file_set.datasets::<E>();
                 data_set
                     .archived_iter()
+                    .progress_count(data_set.len() as u64)
                     .enumerate()
-                    .par_bridge()
+                    //.par_bridge()
                     .filter(|(idx, event)| anl.filter_event(&event, *idx))
                     .map(|(idx, event)| anl.analyze_event(&event, idx))
                     .filter_map(|res| res)
                     .collect::<Vec<R>>()
             }
         };
+        println!("Event loop took {}s", now.elapsed().as_secs_f64());
 
+        Anl::<E, R>::make_announcment("HANDLE RESULTS");
+        let now = std::time::Instant::now();
         {
-            // This gives
             let mut anl = anl_module.write().expect("Failed to get write lock");
             anl.handle_result_chunk(&mut result_chunk);
         }
+        println!("Result handling took {}s", now.elapsed().as_secs_f64());
 
         Anl::<E, R>::make_announcment("FINALIZE");
+        let now = std::time::Instant::now();
         anl_module
             .write()
             .expect("Failed to get write lock")
-            .finalize(&out_dir);
-    }
+            .finalize(self.output_directory());
 
-    pub fn run(&mut self) {
-        // Manage directories
-
-        let out_dir_parent = self.output_directory.clone();
-        let (in_dir, out_dir) = self.manage_output_paths();
-
-        //let mem_mapped_files = Anl::<E, R>::map_data(in_dir.as_path());
-
-        //let data_set = DataSetCollection::new_from_path(in_dir.as_path());
-        //let data_set: ArchivedData<E> = DataSetCollection::new_from_path(in_dir.as_path());
-        //let data_set: ArchivedData<'b, E> = DataSetCollection::new_from_path(in_dir.as_path());
-
-        //let data_set: ArchivedData<E> = DataSetCollection::new(mem_mapped_files);
-
-        self.run_real_analysis(in_dir, out_dir.unwrap());
+        println!("Finalizing took {}s", now.elapsed().as_secs_f64());
 
         Anl::<E, R>::make_announcment("DONE");
-        println!("Output Directory : {}", out_dir_parent.unwrap());
     }
 
     fn should_run_real_analysis(&self) -> bool {
@@ -249,6 +246,10 @@ where
             self.input_directory()
                 .expect("Input data directory not set."),
         );
+
+        if let None = self.output_directory() {
+            return (in_dir.to_path_buf(), None);
+        }
 
         let out_dir: &Path = Path::new(
             self.output_directory()

@@ -194,7 +194,7 @@ impl<'a, E: Archive> DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>
             let input_file = File::open(path_name).expect("File could not be found");
 
             let memory_map =
-                unsafe { Mmap::map(&input_file).expect("Input file could not be memory mapped") };
+                unsafe { Mmap::map_raw(&input_file).expect("Input file could not be memory mapped") };
             mmaps.push(memory_map);
         }
 

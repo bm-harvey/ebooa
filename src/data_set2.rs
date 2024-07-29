@@ -200,6 +200,10 @@ where
         self.data_sets.len()
     }
 
+    pub fn len(&self) -> usize {
+        self.data_sets.iter().map(|ds| ds.len()).sum::<usize>()
+    }
+
     pub fn data_set_by_idx(&self, idx: usize) -> Option<&'a ArchivedDataSet<E>> {
         if idx >= self.num_sets() {
             None
