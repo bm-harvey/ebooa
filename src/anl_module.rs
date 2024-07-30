@@ -16,8 +16,8 @@ use rkyv::ser::serializers::{
 use rkyv::{AlignedVec, Archive};
 use rkyv::{Deserialize, Serialize};
 use std::fs::create_dir;
-use std::io::BufWriter;
 use std::io::Write;
+use std::io::{BufWriter, Read};
 use std::sync::{Arc, Mutex, RwLock};
 use std::{
     fs::File,
@@ -26,6 +26,13 @@ use std::{
 use thousands::Separable;
 
 type A<E> = <E as Archive>::Archived;
+
+#[derive(clap::ValueEnum, Clone, Debug, Default)]
+pub enum FileReadMethod {
+    #[default]
+    Mmap,
+    AllocBytes,
+}
 
 /// The generic form of an event based analysis module. An `Analysis` or `MixedAnalysis` can take in one or more of
 /// these modules and manage the calling of all of these functions for you in a systematic way, or
@@ -76,6 +83,7 @@ pub struct Anl<E: Archive, R> {
     update_interval: usize,
     //
     threads: usize,
+    file_read_method: Option<FileReadMethod>,
 }
 
 impl<E: Archive, R> Default for Anl<E, R> {
@@ -93,6 +101,7 @@ impl<E: Archive, R> Anl<E, R> {
             output_directory: None,
             update_interval: 10_000,
             threads: std::thread::available_parallelism().unwrap().get(),
+            file_read_method: None,
         }
     }
     /// Add an anlsysis module to use for the unmixed data. These analysis modules are not
@@ -135,12 +144,24 @@ impl<E: Archive, R> Anl<E, R> {
         self
     }
 
+    pub fn with_file_read_method(mut self, method: FileReadMethod) -> Self {
+        self.file_read_method = Some(method);
+        self
+    }
+
     pub fn input_directory(&self) -> Option<&Path> {
         self.input_directory.as_deref()
     }
 
     pub fn output_directory(&self) -> Option<&Path> {
         self.output_directory.as_deref()
+    }
+
+    /// Look through the input files to determine which file read method to use.
+    /// This is only called if an explicit method is not provided.
+    pub fn file_read_method_heuristic(&self, files: &Vec<PathBuf>) -> FileReadMethod {
+        // TODO: come up with a heuristic
+        FileReadMethod::Mmap
     }
 }
 
@@ -178,46 +199,89 @@ where
 
         Anl::<E, R>::make_announcment("EVENT LOOP");
         let now = std::time::Instant::now();
+        // Assume each file has 100MB max
+        // 100 MB * 16 threads = 1.6 GB mem
+        // let max_file_size = 100_000_000;
+        let direntries = std::fs::read_dir(in_dir).expect("problem opening input directory");
+        let paths: Vec<PathBuf> = direntries
+            .map(|el| el.expect("").path())
+            .collect::<Vec<PathBuf>>();
+        let final_file_method = match self.file_read_method {
+            None => &self.file_read_method_heuristic(&paths),
+            Some(ref s) => s,
+        };
 
-        let result_chunk = {
-            let anl = anl_module.read().expect("Failed to get read lock");
+        let result_chunk = match final_file_method {
+            FileReadMethod::Mmap => {
+                let anl = anl_module.read().expect("Failed to get read lock");
 
-            let file_set = DataFileCollection::new_from_path(in_dir);
+                let file_set = DataFileCollection::new_from_path(in_dir);
 
-            let num_threads = self.threads;
-            let results = Arc::new(Mutex::new(Vec::<Vec<R>>::with_capacity(num_threads)));
-            let data_set = file_set.datasets::<E>();
+                let num_threads = self.threads;
+                let results = Arc::new(Mutex::new(Vec::<Vec<R>>::with_capacity(num_threads)));
+                let data_set = file_set.datasets::<E>();
 
-            println!("Threads:  {}", num_threads);
-            println!("Analyzing: {}", data_set.len());
-            let threaded_result_chunk = |start: usize, stop: usize| {
-                let result = data_set
-                    .limited_archived_iter(start, stop)
-                    .enumerate()
-                    .filter(|(idx, event)| anl.filter_event(event, *idx))
-                    .flat_map(|(idx, event)| anl.analyze_event(event, idx))
-                    .collect::<Vec<R>>();
+                println!("Threads:  {}", num_threads);
+                println!("Analyzing: {}", data_set.len());
+                let threaded_result_chunk = |start: usize, stop: usize| {
+                    let result = data_set
+                        .limited_archived_iter(start, stop)
+                        .enumerate()
+                        .filter(|(idx, event)| anl.filter_event(event, *idx))
+                        .flat_map(|(idx, event)| anl.analyze_event(event, idx))
+                        .collect::<Vec<R>>();
 
-                results.lock().unwrap().push(result);
-            };
+                    results.lock().unwrap().push(result);
+                };
 
-            let chunk_size = data_set.len() / num_threads;
-            let remainder = data_set.len() % num_threads;
+                let chunk_size = data_set.len() / num_threads;
+                let remainder = data_set.len() % num_threads;
 
-            std::thread::scope(|s| {
-                let mut start = 0;
-                (0..num_threads).for_each(|thread_idx| {
-                    let mut stop = start + chunk_size + 1;
-                    if thread_idx < remainder {
-                        stop += 1
-                    }
-                    s.spawn(move || threaded_result_chunk(start, stop));
+                std::thread::scope(|s| {
+                    let mut start = 0;
+                    (0..num_threads).for_each(|thread_idx| {
+                        let mut stop = start + chunk_size + 1;
+                        if thread_idx < remainder {
+                            stop += 1
+                        }
+                        s.spawn(move || threaded_result_chunk(start, stop));
 
-                    start = stop
+                        start = stop
+                    });
                 });
-            });
 
-            results
+                results
+            }
+            FileReadMethod::AllocBytes => {
+                // TODO: parallelize
+                let file_data: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(vec![vec![]; 16]));
+                let anl = anl_module.read().expect("Failed to get read lock");
+                Arc::new(Mutex::new(
+                    paths
+                        .iter()
+                        .progress_count(paths.len() as u64)
+                        .filter(|path| path.to_str().unwrap().ends_with(".rkyv"))
+                        .map(|path| {
+                            let fdata = Arc::clone(&file_data);
+                            let mut f = File::open(path).unwrap();
+                            let thread_ind = 1;
+                            let mut all_the_data = fdata.lock().unwrap();
+                            let data = all_the_data.get_mut(thread_ind).unwrap();
+                            data.clear();
+                            f.read_to_end(data).unwrap();
+                            let data_set = unsafe { rkyv::archived_root::<DataSet<E>>(&data) };
+                            data_set
+                                .archived_events()
+                                .iter()
+                                .enumerate()
+                                .filter(|(e_ind, e)| anl.filter_event(e, *e_ind))
+                                .map(|(e_ind, e)| anl.analyze_event(e, e_ind))
+                                .filter_map(|e| e)
+                                .collect::<Vec<R>>()
+                        })
+                        .collect::<Vec<Vec<R>>>(),
+                ))
+            }
         };
         println!("Event loop took {}s", now.elapsed().as_secs_f64());
 

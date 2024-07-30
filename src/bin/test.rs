@@ -1,6 +1,7 @@
 use clap::Parser;
 use ebooa::anl_module::Anl;
 use ebooa::anl_module::AnlModule;
+use ebooa::anl_module::FileReadMethod;
 use ebooa::example_event::MyEvent;
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
@@ -78,6 +79,9 @@ struct Args {
     #[arg(short, long, default_value_t = 1_000)]
     files: usize,
 
+    #[arg(short, long)]
+    file_method: Option<FileReadMethod>,
+
     #[arg(short, long, default_value_t = 100_000)]
     events: usize,
 
@@ -113,9 +117,14 @@ fn main() {
 
     // read back files ... this is the stuff we are trying to make very very fast
     let module = TestAnlMod::default();
+    let mut anl = 
     Anl::<MyEvent, Res>::new()
         .with_input_directory(&args.data_dir)
         .with_anl_module(module)
-        .with_num_threads(args.threads)
+        .with_num_threads(args.threads);
+    if let Some(method) = args.file_method {
+        anl = anl.with_file_read_method(method);
+    }
+    anl
         .run();
 }
