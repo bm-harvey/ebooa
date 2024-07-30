@@ -80,6 +80,9 @@ struct Args {
 
     #[arg(short, long, default_value_t = 100_000)]
     events: usize,
+
+    #[arg(short='j', default_value_t = 0)]
+    threads: usize,
 }
 
 fn main() {
@@ -113,5 +116,6 @@ fn main() {
     Anl::<MyEvent, Res>::new()
         .with_input_directory(&args.data_dir)
         .with_anl_module(module)
+        .with_num_threads(args.threads)
         .run();
 }

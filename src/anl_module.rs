@@ -80,6 +80,8 @@ pub struct Anl<E: Archive, R> {
     output_directory: Option<PathBuf>,
     //
     update_interval: usize,
+    //
+    threads: usize,
 }
 
 impl<E: Archive, R> Default for Anl<E, R> {
@@ -96,9 +98,9 @@ impl<E: Archive, R> Anl<E, R> {
             input_directory: None,
             output_directory: None,
             update_interval: 10_000,
+            threads: std::thread::available_parallelism().unwrap().get(),
         }
     }
-
     /// Add an anlsysis module to use for the unmixed data. These analysis modules are not
     /// automatically applied to the mixed events
     pub fn with_anl_module(mut self, module: impl AnlModule<E, R> + 'static) -> Self {
@@ -111,6 +113,17 @@ impl<E: Archive, R> Anl<E, R> {
     /// A directory containing the raw `rkyv::Archived` data.
     pub fn with_input_directory(mut self, input: &str) -> Self {
         self.input_directory = Some(Path::new(input).to_path_buf());
+        self
+    }
+
+    pub fn with_num_threads(mut self, threads: usize) -> Self {
+        let threads = if threads == 0 {
+            std::thread::available_parallelism().unwrap().get()
+        } else {
+            let max_threads = std::thread::available_parallelism().unwrap().get();
+            std::cmp::min(max_threads, threads)
+        };
+        self.threads = threads;
         self
     }
 
@@ -153,6 +166,7 @@ where
     //R: Sync,
 {
     pub fn run(&mut self) {
+        let global_timer = std::time::Instant::now();
         let anl_module = self.anl_module.as_ref().expect("No module attatched");
         let in_dir = if let Some(path) = self.input_directory() {
             path
@@ -176,7 +190,7 @@ where
 
             let file_set = DataFileCollection::new_from_path(in_dir);
 
-            let num_threads = std::thread::available_parallelism().unwrap().get();
+            let num_threads = self.threads;
             let results = Arc::new(Mutex::new(Vec::<Vec<R>>::with_capacity(num_threads)));
             let data_set = file_set.datasets::<E>();
 
@@ -235,6 +249,7 @@ where
         println!("Finalizing took {}s", now.elapsed().as_secs_f64());
 
         Anl::<E, R>::make_announcment("DONE");
+        println!("Anl took {}s", global_timer.elapsed().as_secs_f64());
     }
 
     fn should_run_real_analysis(&self) -> bool {
