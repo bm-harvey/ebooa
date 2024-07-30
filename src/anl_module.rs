@@ -254,22 +254,32 @@ where
             }
             FileReadMethod::AllocBytes => {
                 // TODO: parallelize
-                let file_data: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(vec![vec![]; 16]));
+                let num_threads = self.threads;
+                let mut file_data: Vec<Vec<u8>> = vec![vec![]; num_threads];
+                let results: Arc<Mutex<Vec<Vec<R>>>> = Arc::new(Mutex::new(vec![vec![]; num_threads]));
                 let anl = anl_module.read().expect("Failed to get read lock");
-                Arc::new(Mutex::new(
-                    paths
-                        .iter()
-                        .progress_count(paths.len() as u64)
+                println!("Threads:  {}", num_threads);
+                println!("Analyzing: {}", paths.len());
+                struct ShootMyselfInTheFoot(*mut Vec<u8>);
+                unsafe impl Send for ShootMyselfInTheFoot {}
+                unsafe impl Sync for ShootMyselfInTheFoot {}
+                let ptr = ShootMyselfInTheFoot(file_data.as_mut_ptr());
+
+                // Parallelize over paths for now
+                let threaded_result_chunk = |start: usize, stop: usize, thread_idx: usize| {
+                    println!("checking paths from {start} to {stop} for thread {thread_idx}");
+                    let result = paths[start..stop].iter()
+                        // .progress_count(paths.len() as u64)
                         .filter(|path| path.to_str().unwrap().ends_with(".rkyv"))
                         .map(|path| {
-                            let fdata = Arc::clone(&file_data);
+                            let _ = &ptr;
+                            let mut fdata = unsafe {
+                                &mut (*ptr.0.clone().wrapping_add(thread_idx))
+                            };
                             let mut f = File::open(path).unwrap();
-                            let thread_ind = 1;
-                            let mut all_the_data = fdata.lock().unwrap();
-                            let data = all_the_data.get_mut(thread_ind).unwrap();
-                            data.clear();
-                            f.read_to_end(data).unwrap();
-                            let data_set = unsafe { rkyv::archived_root::<DataSet<E>>(&data) };
+                            fdata.clear();
+                            f.read_to_end(&mut fdata).unwrap();
+                            let data_set = DataSet::<E>::read_from_rkyv(&fdata);
                             data_set
                                 .archived_events()
                                 .iter()
@@ -279,8 +289,28 @@ where
                                 .filter_map(|e| e)
                                 .collect::<Vec<R>>()
                         })
-                        .collect::<Vec<Vec<R>>>(),
-                ))
+                        .flatten()
+                        .collect::<Vec<R>>();
+
+                    results.lock().unwrap().push(result);
+                };
+
+                let chunk_size = paths.len() / num_threads;
+                let remainder = paths.len() % num_threads;
+
+                std::thread::scope(|s| {
+                    let mut start = 0;
+                    (0..num_threads).for_each(|thread_idx| {
+                        let mut stop = (start + chunk_size + 1).min(paths.len());
+                        if thread_idx < remainder {
+                            stop += 1
+                        }
+                        s.spawn(move || threaded_result_chunk(start, stop, thread_idx));
+                        start = stop
+                    });
+                });
+
+                results
             }
         };
         println!("Event loop took {}s", now.elapsed().as_secs_f64());
