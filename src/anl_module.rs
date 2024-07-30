@@ -1,16 +1,11 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
-use crate::data_set2;
-use crate::data_set2::ArchivedDataCollectionIter;
-//use crate::data_set2::DataCollectionIter;
-//use crate::data_set2::LimitedArchivedDataCollectionIter;
-use crate::data_set2::{DataFileCollection, DataSet, DataSetCollection};
+use crate::data_set;
+use crate::data_set::ArchivedDataCollectionIter;
+use crate::data_set::{DataFileCollection, DataSet, DataSetCollection};
 use colored::Colorize;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
-//use indicatif::ProgressBar;
-//use indicatif::ProgressIterator;
 use memmap2::Mmap;
-//use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelBridge;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rayon::{prelude::*, result};
@@ -24,7 +19,6 @@ use std::fs::create_dir;
 use std::io::BufWriter;
 use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
-use std::usize;
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -57,7 +51,6 @@ pub trait AnlModule<E: Archive, R>: Send + Sync {
     /// Runs once per event
     fn analyze_event(&self, _event: &A<E>, _idx: usize) -> Option<R>;
 
-    ///
     fn handle_result_chunk(&mut self, results: &mut Vec<R>);
 
     /// Place to put periodic print statements every once in a while (interval determined by the
@@ -68,9 +61,10 @@ pub trait AnlModule<E: Archive, R>: Send + Sync {
     fn finalize(&mut self, _output_directory: Option<&Path>) {}
 }
 
+type ImplAnlMod<E, R> = Option<Arc<RwLock<Box<dyn AnlModule<E, R>>>>>;
 pub struct Anl<E: Archive, R> {
     /// The analysis scripts used to analyze the generated events
-    anl_module: Option<Arc<RwLock<Box<dyn AnlModule<E, R>>>>>,
+    anl_module: ImplAnlMod<E, R>,
     /// Where to find the actual input data. This value needs to get set manually, otherwise
     /// `run_analysis` will panic.
     input_directory: Option<PathBuf>,
@@ -157,7 +151,7 @@ impl<E: Archive, R> Anl<E, R> {
 //SharedSerializeMap,
 //>,
 //>,
-impl<'a, E, R> Anl<E, R>
+impl<E, R> Anl<E, R>
 where
     E: Archive,
     <E as Archive>::Archived: Sync,
@@ -200,9 +194,8 @@ where
                 let result = data_set
                     .limited_archived_iter(start, stop)
                     .enumerate()
-                    .filter(|(idx, event)| anl.filter_event(&event, *idx))
-                    .map(|(idx, event)| anl.analyze_event(&event, idx))
-                    .filter_map(|res| res)
+                    .filter(|(idx, event)| anl.filter_event(event, *idx))
+                    .flat_map(|(idx, event)| anl.analyze_event(event, idx))
                     .collect::<Vec<R>>();
 
                 results.lock().unwrap().push(result);
@@ -292,7 +285,7 @@ where
                 .expect("Input data directory not set."),
         );
 
-        if let None = self.output_directory() {
+        if self.output_directory().is_none() {
             return (in_dir.to_path_buf(), None);
         }
 
@@ -311,7 +304,7 @@ where
         }
 
         if !out_dir.is_dir() {
-            create_dir(&out_dir).expect("Output directory could not be created");
+            create_dir(out_dir).expect("Output directory could not be created");
         }
 
         let real_out_dir = None;

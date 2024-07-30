@@ -39,10 +39,10 @@ impl AnlModule<MyEvent, Res> for TestAnlMod {
         let momentum = event
             .particles()
             .iter()
-            .map(|mp| mp.physical_particle())
-            .map(|pp| pp.momentum())
-            .map(|mom| mom.mag_3())
-            .map(|mom| mom.powf(2.0))
+            .map(|measured_particle| measured_particle.physical_particle())
+            .map(|physical_particle| physical_particle.momentum())
+            .map(|momentum| momentum.mag_3())
+            .map(|momentum_mag| momentum_mag.powi(2))
             .sum::<f64>();
 
         Some(Res { trigger, momentum })
@@ -59,7 +59,7 @@ impl AnlModule<MyEvent, Res> for TestAnlMod {
             self.results.iter().map(|r| r.trigger as f64).sum::<f64>() / self.results.len() as f64;
 
         let mean_momentum =
-            self.results.iter().map(|r| r.momentum as f64).sum::<f64>() / self.results.len() as f64;
+            self.results.iter().map(|r| r.momentum).sum::<f64>() / self.results.len() as f64;
 
         println!("the average trigger was: {}.", mean_trigger);
         println!("the average momentum was: {}.", mean_momentum);
@@ -81,7 +81,7 @@ struct Args {
     #[arg(short, long, default_value_t = 100_000)]
     events: usize,
 
-    #[arg(short='j', default_value_t = 0)]
+    #[arg(short = 'j', default_value_t = 0)]
     threads: usize,
 }
 
@@ -105,7 +105,7 @@ fn main() {
 
                 let file_name = format!("{}/file_{}.rkyv", args.data_dir, file_idx);
                 let mut file = File::create(&file_name).unwrap();
-                file.write(&rkyv::to_bytes::<_, 100_000_000>(&events).unwrap())
+                file.write_all(&rkyv::to_bytes::<_, 100_000_000>(&events).unwrap())
                     .unwrap();
             });
     }
