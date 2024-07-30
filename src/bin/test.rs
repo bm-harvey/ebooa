@@ -24,8 +24,8 @@ impl AnlModule<MyEvent, Res> for TestAnlMod {
     }
 
     fn filter_event(&self, _event: &<MyEvent as rkyv::Archive>::Archived, _idx: usize) -> bool {
-        _event.particles().len() == 2
-        //true
+        //_event.particles().len() == 2
+        true
     }
 
     fn analyze_event(
