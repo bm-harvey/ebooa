@@ -24,6 +24,7 @@ use std::fs::create_dir;
 use std::io::BufWriter;
 use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
+use std::usize;
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -37,7 +38,9 @@ type A<E> = <E as Archive>::Archived;
 /// one could use `AnalysisModule`s on their own right for organizational purposes.
 pub trait AnlModule<E: Archive, R>: Send + Sync {
     /// Required name of the module, can be used for naming outputs or keeping track of outputs
-    fn name(&self) -> String;
+    fn name(&self) -> String {
+        String::from("anl")
+    }
 
     /// Runs before the event loop. The output directory is passed in case the module generates
     /// output that should be buffered and written during analysis rather than holding on to all of
@@ -175,12 +178,13 @@ where
 
             let num_threads = std::thread::available_parallelism().unwrap().get();
             let results = Arc::new(Mutex::new(Vec::<Vec<R>>::with_capacity(num_threads)));
-
             let data_set = file_set.datasets::<E>();
+
+            println!("Threads:  {}", num_threads);
+            println!("Analyzing: {}", data_set.len());
             let threaded_result_chunk = |start: usize, stop: usize| {
                 let result = data_set
                     .limited_archived_iter(start, stop)
-                    //.progress_count((start - stop) as u64)
                     .enumerate()
                     .filter(|(idx, event)| anl.filter_event(&event, *idx))
                     .map(|(idx, event)| anl.analyze_event(&event, idx))

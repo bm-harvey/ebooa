@@ -24,8 +24,8 @@ impl AnlModule<MyEvent, Res> for TestAnlMod {
     }
 
     fn filter_event(&self, _event: &<MyEvent as rkyv::Archive>::Archived, _idx: usize) -> bool {
-        //event.particles().len() == 2
-        true
+        _event.particles().len() == 2
+        //true
     }
 
     fn analyze_event(
@@ -33,7 +33,7 @@ impl AnlModule<MyEvent, Res> for TestAnlMod {
         event: &<MyEvent as rkyv::Archive>::Archived,
         _idx: usize,
     ) -> Option<Res> {
-        //let event = event.event();
+        let event = event.event();
 
         let trigger = event.trigger();
         let momentum = event

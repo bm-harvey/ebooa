@@ -336,7 +336,6 @@ where
             return None;
         }
 
-        self.reverse_counter -= 1;
         if self.data_set_idx >= self.data.num_sets() {
             return None;
         }
@@ -354,6 +353,7 @@ where
         } else {
             let idx = self.idx;
             self.idx += 1;
+            self.reverse_counter -= 1;
             Some(self.data_set.unwrap().archived_events().get(idx).unwrap())
         }
     }
