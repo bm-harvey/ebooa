@@ -193,8 +193,9 @@ impl<'a, E: Archive> DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>
 
             let input_file = File::open(path_name).expect("File could not be found");
 
-            let memory_map =
-                unsafe { Mmap::map_raw(&input_file).expect("Input file could not be memory mapped") };
+            let memory_map = unsafe {
+                Mmap::map_raw(&input_file).expect("Input file could not be memory mapped")
+            };
             mmaps.push(memory_map);
         }
 
@@ -312,8 +313,9 @@ where
         DataCollectionIter::<E>::new(self)
     }
 
-    pub fn archived_iter<'b>(&'a self) -> ArchivedDataCollectionIter<'b, E> 
-        where 'a : 'b
+    pub fn archived_iter<'b>(&'a self) -> ArchivedDataCollectionIter<'b, E>
+    where
+        'a: 'b,
     {
         ArchivedDataCollectionIter::<E>::new(self)
     }
@@ -341,8 +343,8 @@ impl<'a, E: Archive> DataCollectionIter<'a, E>
 where
     <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
 {
-    pub fn new(data: &'a ArchivedDataSet<E>) -> Self{
-    //pub fn new(data: &'a DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>) -> Self {
+    pub fn new(data: &'a ArchivedDataSet<E>) -> Self {
+        //pub fn new(data: &'a DataSetCollection<'a, <DataSet<E> as Archive>::Archived, E>) -> Self {
         Self {
             data,
             data_set: data.data_set_by_idx(0),

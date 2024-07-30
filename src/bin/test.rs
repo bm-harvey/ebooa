@@ -2,9 +2,10 @@ use clap::Parser;
 use ebooa::anl_module::Anl;
 use ebooa::anl_module::AnlModule;
 use ebooa::example_event::MyEvent;
-//use rayon::iter::IntoParallelRefIterator;
-//use std::sync::Arc;
-//use std::sync::RwLock;
+use indicatif::ParallelProgressIterator;
+use rayon::prelude::*;
+use std::fs::File;
+use std::io::Write;
 
 #[derive(Default)]
 struct TestAnlMod {
@@ -39,6 +40,7 @@ impl AnlModule<MyEvent, Res> for TestAnlMod {
             .map(|mp| mp.physical_particle())
             .map(|pp| pp.momentum())
             .map(|mom| mom.mag_3())
+            .map(|mom| mom.powf(2.0))
             .sum::<f64>();
 
         Some(Res { trigger, momentum })
@@ -67,26 +69,44 @@ impl AnlModule<MyEvent, Res> for TestAnlMod {
 struct Args {
     #[arg(short, long)]
     data_dir: String,
+
+    #[arg(short, long, default_value_t = false)]
+    gen_data: bool,
+
+    #[arg(short, long, default_value_t = 1_000)]
+    files: usize,
+
+    #[arg(short, long, default_value_t = 100_000)]
+    events: usize,
 }
 
 fn main() {
     let args = Args::parse();
 
-    //let num_files = 1000;
-    //let num_events = 100_000;
+    // generate files
+    let now = std::time::Instant::now();
+    if args.gen_data {
+        let num_files = args.files;
+        let num_events = args.events;
 
-    //for file_idx in (0..num_files).progress() {
-    //let mut events = Vec::with_capacity(num_events);
-    //for _event_idx in 0..num_events {
-    //events.push(MyEvent::random());
-    //}
+        (0..num_files)
+            .into_par_iter()
+            .progress()
+            .for_each(|file_idx| {
+                let mut events = Vec::with_capacity(num_events);
+                for _event_idx in 0..num_events {
+                    events.push(MyEvent::random());
+                }
 
-    //let file_name = format!("{}/file_{}.rkyv", data_dir, file_idx);
-    //let mut file = File::create(&file_name).unwrap();
-    //file.write(&rkyv::to_bytes::<_, 256>(&events).unwrap())
-    //.unwrap();
-    //}
+                let file_name = format!("{}/file_{}.rkyv", args.data_dir, file_idx);
+                let mut file = File::create(&file_name).unwrap();
+                file.write(&rkyv::to_bytes::<_, 100_000_000>(&events).unwrap())
+                    .unwrap();
+            });
+    }
+    println!("Time to write files: {}s", now.elapsed().as_secs_f64());
 
+    // read back files ... this is the stuff we are trying to make very very fast
     let module = TestAnlMod::default();
     Anl::<MyEvent, Res>::new()
         .with_input_directory(&args.data_dir)

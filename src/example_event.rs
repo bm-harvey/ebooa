@@ -1,7 +1,7 @@
 use rkyv::{vec::ArchivedVec, Archive, Deserialize, Serialize};
 
 use rand::{thread_rng, Rng};
-use rkyv_impl::{archive_impl, archive_method};
+use rkyv_impl::archive_impl;
 
 #[derive(Archive, Deserialize, Serialize)]
 pub struct Phys4Vec {
