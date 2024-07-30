@@ -12,6 +12,7 @@ struct TestAnlMod {
     results: Vec<Res>,
 }
 
+#[derive(Clone)]
 pub struct Res {
     pub trigger: u16,
     pub momentum: f64,
@@ -22,8 +23,9 @@ impl AnlModule<MyEvent, Res> for TestAnlMod {
         String::from("test")
     }
 
-    fn filter_event(&self, event: &<MyEvent as rkyv::Archive>::Archived, _idx: usize) -> bool {
-        event.particles().len() == 2
+    fn filter_event(&self, _event: &<MyEvent as rkyv::Archive>::Archived, _idx: usize) -> bool {
+        //event.particles().len() == 2
+        true
     }
 
     fn analyze_event(
@@ -31,7 +33,7 @@ impl AnlModule<MyEvent, Res> for TestAnlMod {
         event: &<MyEvent as rkyv::Archive>::Archived,
         _idx: usize,
     ) -> Option<Res> {
-        let event = event.event();
+        //let event = event.event();
 
         let trigger = event.trigger();
         let momentum = event

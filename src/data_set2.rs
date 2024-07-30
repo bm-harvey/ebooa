@@ -288,18 +288,39 @@ pub struct LimitedArchivedDataCollectionIter<'a, E: Archive> {
     data_set: Option<&'a ArchivedDataSet<E>>,
     data_set_idx: usize,
     idx: usize,
-    stop_idx: usize,
+    reverse_counter: usize,
 }
 
-impl<'a, E: Archive> LimitedArchivedDataCollectionIter<'a, E>
-{
+impl<'a, E: Archive> LimitedArchivedDataCollectionIter<'a, E> {
     pub fn new(data: &'a DataSetCollection<'a, E>, start_idx: usize, stop_idx: usize) -> Self {
+        // idx needs to be the idx of the event for that file
+        // data_set_idx needs to be calculated
+
+        let (data_set_idx, num_events_in_prev) = {
+            let mut result = (0, 0);
+            let mut num_events_in_prev = 0;
+            for data_set_idx in 0..data.num_sets() {
+                let ds = data
+                    .data_set_by_idx(data_set_idx)
+                    .expect("Tried to reach a dataset that doesn't exist");
+                let num_events_in_this = ds.len();
+                if num_events_in_prev + num_events_in_this > start_idx {
+                    result = (data_set_idx, num_events_in_prev);
+                    break;
+                }
+                num_events_in_prev += num_events_in_this;
+            }
+            result
+        };
+
+        let count = stop_idx - start_idx;
+        let idx = start_idx - num_events_in_prev;
         Self {
             data,
-            data_set: data.data_set_by_idx(0),
-            data_set_idx: 0,
-            idx: start_idx,
-            stop_idx: std::cmp::min(stop_idx, data.len()),
+            data_set: data.data_set_by_idx(data_set_idx),
+            data_set_idx,
+            idx,
+            reverse_counter: count,
         }
     }
 }
@@ -307,20 +328,20 @@ impl<'a, E: Archive> LimitedArchivedDataCollectionIter<'a, E>
 impl<'a, E> Iterator for LimitedArchivedDataCollectionIter<'a, E>
 where
     E: Archive,
-    <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
 {
-    type Item = (&'a <E as Archive>::Archived, usize);
+    type Item = &'a <E as Archive>::Archived;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.reverse_counter == 0 {
+            return None;
+        }
+
+        self.reverse_counter -= 1;
         if self.data_set_idx >= self.data.num_sets() {
             return None;
         }
 
         self.data_set?;
-
-        if self.idx == self.stop_idx {
-            return None;
-        }
 
         if self.idx >= self.data_set.unwrap().len() {
             self.idx = 0;
@@ -333,10 +354,7 @@ where
         } else {
             let idx = self.idx;
             self.idx += 1;
-            Some((
-                self.data_set.unwrap().archived_events().get(idx).unwrap(),
-                idx,
-            ))
+            Some(self.data_set.unwrap().archived_events().get(idx).unwrap())
         }
     }
 }

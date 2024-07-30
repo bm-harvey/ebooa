@@ -13,7 +13,7 @@ use memmap2::Mmap;
 //use rayon::iter::ParallelBridge;
 use rayon::iter::ParallelBridge;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use rayon::prelude::*;
+use rayon::{prelude::*, result};
 use rkyv::ser::serializers::{
     AlignedSerializer, AllocScratch, CompositeSerializer, FallbackScratch, HeapScratch,
     SharedSerializeMap,
@@ -146,6 +146,7 @@ where
     E: Archive,
     <E as Archive>::Archived: Sync,
     R: Send,
+    R: Clone,
     //R: Sync,
 {
     pub fn run(&mut self) {
@@ -167,31 +168,56 @@ where
         Anl::<E, R>::make_announcment("EVENT LOOP");
         let now = std::time::Instant::now();
 
-        let mut result_chunk = {
+        let result_chunk = {
             let anl = anl_module.read().expect("Failed to get read lock");
 
             let file_set = DataFileCollection::new_from_path(in_dir);
 
-            {
-                let data_set = file_set.datasets::<E>();
-                data_set
-                    .archived_iter()
-                    .progress_count(data_set.len() as u64)
+            let num_threads = std::thread::available_parallelism().unwrap().get();
+            let results = Arc::new(Mutex::new(Vec::<Vec<R>>::with_capacity(num_threads)));
+
+            let data_set = file_set.datasets::<E>();
+            let threaded_result_chunk = |start: usize, stop: usize| {
+                let result = data_set
+                    .limited_archived_iter(start, stop)
+                    //.progress_count((start - stop) as u64)
                     .enumerate()
-                    //.par_bridge()
                     .filter(|(idx, event)| anl.filter_event(&event, *idx))
                     .map(|(idx, event)| anl.analyze_event(&event, idx))
                     .filter_map(|res| res)
-                    .collect::<Vec<R>>()
-            }
+                    .collect::<Vec<R>>();
+
+                results.lock().unwrap().push(result);
+            };
+
+            let chunk_size = data_set.len() / num_threads;
+            let remainder = data_set.len() % num_threads;
+
+            std::thread::scope(|s| {
+                let mut start = 0;
+                (0..num_threads).for_each(|thread_idx| {
+                    let mut stop = start + chunk_size + 1;
+                    if thread_idx < remainder {
+                        stop += 1
+                    }
+                    s.spawn(move || threaded_result_chunk(start, stop));
+
+                    start = stop
+                });
+            });
+
+            results
         };
         println!("Event loop took {}s", now.elapsed().as_secs_f64());
 
         Anl::<E, R>::make_announcment("HANDLE RESULTS");
         let now = std::time::Instant::now();
         {
+            let mut lock = result_chunk.lock().unwrap();
             let mut anl = anl_module.write().expect("Failed to get write lock");
-            anl.handle_result_chunk(&mut result_chunk);
+            lock.iter_mut().for_each(|chunk| {
+                anl.handle_result_chunk(chunk);
+            });
         }
         println!("Result handling took {}s", now.elapsed().as_secs_f64());
 
