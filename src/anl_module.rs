@@ -4,7 +4,7 @@ use crate::data_set;
 use crate::data_set::ArchivedDataCollectionIter;
 use crate::data_set::{DataFileCollection, DataSet, DataSetCollection};
 use colored::Colorize;
-use indicatif::{ParallelProgressIterator, ProgressIterator};
+use indicatif::{MultiProgress, ParallelProgressIterator, ProgressBar, ProgressIterator};
 use memmap2::Mmap;
 use rayon::iter::ParallelBridge;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
@@ -199,11 +199,8 @@ where
 
         Anl::<E, R>::make_announcment("EVENT LOOP");
         let now = std::time::Instant::now();
-        // Assume each file has 100MB max
-        // 100 MB * 16 threads = 1.6 GB mem
-        // let max_file_size = 100_000_000;
-        let direntries = std::fs::read_dir(in_dir).expect("problem opening input directory");
-        let paths: Vec<PathBuf> = direntries
+        let dir_entries = std::fs::read_dir(in_dir).expect("problem opening input directory");
+        let paths: Vec<PathBuf> = dir_entries
             .map(|el| el.expect("").path())
             .collect::<Vec<PathBuf>>();
         let final_file_method = match self.file_read_method {
@@ -253,23 +250,23 @@ where
                 results
             }
             FileReadMethod::AllocBytes => {
-                // TODO: parallelize
                 let num_threads = self.threads;
                 let mut file_data: Vec<Vec<u8>> = vec![vec![]; num_threads];
                 let results: Arc<Mutex<Vec<Vec<R>>>> = Arc::new(Mutex::new(vec![vec![]; num_threads]));
                 let anl = anl_module.read().expect("Failed to get read lock");
                 println!("Threads:  {}", num_threads);
-                println!("Analyzing: {}", paths.len());
+                println!("Analyzing: {} files", paths.len());
                 struct ShootMyselfInTheFoot(*mut Vec<u8>);
                 unsafe impl Send for ShootMyselfInTheFoot {}
                 unsafe impl Sync for ShootMyselfInTheFoot {}
                 let ptr = ShootMyselfInTheFoot(file_data.as_mut_ptr());
+                let pbar = MultiProgress::new();
 
                 // Parallelize over paths for now
                 let threaded_result_chunk = |start: usize, stop: usize, thread_idx: usize| {
-                    println!("checking paths from {start} to {stop} for thread {thread_idx}");
+                    let pb = pbar.add(ProgressBar::new((stop - start) as u64));
                     let result = paths[start..stop].iter()
-                        // .progress_count(paths.len() as u64)
+                        // .progress_count((stop - start) as u64)
                         .filter(|path| path.to_str().unwrap().ends_with(".rkyv"))
                         .map(|path| {
                             let _ = &ptr;
@@ -280,14 +277,16 @@ where
                             fdata.clear();
                             f.read_to_end(&mut fdata).unwrap();
                             let data_set = DataSet::<E>::read_from_rkyv(&fdata);
-                            data_set
+                            let res = data_set
                                 .archived_events()
                                 .iter()
                                 .enumerate()
                                 .filter(|(e_ind, e)| anl.filter_event(e, *e_ind))
                                 .map(|(e_ind, e)| anl.analyze_event(e, e_ind))
                                 .filter_map(|e| e)
-                                .collect::<Vec<R>>()
+                                .collect::<Vec<R>>();
+                            pb.inc(1);
+                            res
                         })
                         .flatten()
                         .collect::<Vec<R>>();
