@@ -252,7 +252,8 @@ where
             FileReadMethod::AllocBytes => {
                 let num_threads = self.threads;
                 let mut file_data: Vec<Vec<u8>> = vec![vec![]; num_threads];
-                let results: Arc<Mutex<Vec<Vec<R>>>> = Arc::new(Mutex::new(vec![vec![]; num_threads]));
+                let results: Arc<Mutex<Vec<Vec<R>>>> =
+                    Arc::new(Mutex::new(vec![vec![]; num_threads]));
                 let anl = anl_module.read().expect("Failed to get read lock");
                 println!("Threads:  {}", num_threads);
                 println!("Analyzing: {} files", paths.len());
@@ -265,14 +266,14 @@ where
                 // Parallelize over paths for now
                 let threaded_result_chunk = |start: usize, stop: usize, thread_idx: usize| {
                     let pb = pbar.add(ProgressBar::new((stop - start) as u64));
-                    let result = paths[start..stop].iter()
+                    let result = paths[start..stop]
+                        .iter()
                         // .progress_count((stop - start) as u64)
                         .filter(|path| path.to_str().unwrap().ends_with(".rkyv"))
                         .map(|path| {
                             let _ = &ptr;
-                            let mut fdata = unsafe {
-                                &mut (*ptr.0.clone().wrapping_add(thread_idx))
-                            };
+                            let mut fdata =
+                                unsafe { &mut (*ptr.0.clone().wrapping_add(thread_idx)) };
                             let mut f = File::open(path).unwrap();
                             fdata.clear();
                             f.read_to_end(&mut fdata).unwrap();
@@ -294,6 +295,7 @@ where
                     results.lock().unwrap().push(result);
                 };
 
+                // TODO: make this divide more evenly among threads
                 let chunk_size = paths.len() / num_threads;
                 let remainder = paths.len() % num_threads;
 
