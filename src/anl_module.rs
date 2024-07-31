@@ -159,7 +159,7 @@ impl<E: Archive, R> Anl<E, R> {
 
     /// Look through the input files to determine which file read method to use.
     /// This is only called if an explicit method is not provided.
-    pub fn file_read_method_heuristic(&self, files: &Vec<PathBuf>) -> FileReadMethod {
+    pub fn file_read_method_heuristic(&self, _files: &[PathBuf]) -> FileReadMethod {
         // TODO: come up with a heuristic
         FileReadMethod::Mmap
     }
@@ -270,26 +270,24 @@ where
                         .iter()
                         // .progress_count((stop - start) as u64)
                         .filter(|path| path.to_str().unwrap().ends_with(".rkyv"))
-                        .map(|path| {
+                        .flat_map(|path| {
                             let _ = &ptr;
-                            let mut fdata =
-                                unsafe { &mut (*ptr.0.clone().wrapping_add(thread_idx)) };
+                            let fdata =
+                                unsafe { &mut (*ptr.0.wrapping_add(thread_idx)) };
                             let mut f = File::open(path).unwrap();
                             fdata.clear();
-                            f.read_to_end(&mut fdata).unwrap();
-                            let data_set = DataSet::<E>::read_from_rkyv(&fdata);
+                            f.read_to_end(fdata).unwrap();
+                            let data_set = DataSet::<E>::read_from_rkyv(fdata);
                             let res = data_set
                                 .archived_events()
                                 .iter()
                                 .enumerate()
                                 .filter(|(e_ind, e)| anl.filter_event(e, *e_ind))
-                                .map(|(e_ind, e)| anl.analyze_event(e, e_ind))
-                                .filter_map(|e| e)
+                                .filter_map(|(e_ind, e)| anl.analyze_event(e, e_ind))
                                 .collect::<Vec<R>>();
                             pb.inc(1);
                             res
                         })
-                        .flatten()
                         .collect::<Vec<R>>();
 
                     results.lock().unwrap().push(result);
