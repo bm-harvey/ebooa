@@ -108,7 +108,7 @@ fn main() {
                 }
 
                 let file_name = format!("{}/file_{}.rkyv", args.data_dir, file_idx);
-                let mut file = File::create(&file_name).unwrap();
+                let mut file = File::create(file_name).unwrap();
                 file.write_all(&rkyv::to_bytes::<_, 100_000_000>(&events).unwrap())
                     .unwrap();
             });
