@@ -117,14 +117,12 @@ fn main() {
 
     // read back files ... this is the stuff we are trying to make very very fast
     let module = TestAnlMod::default();
-    let mut anl = 
-    Anl::<MyEvent, Res>::new()
+    let mut anl = Anl::<MyEvent, Res>::new()
         .with_input_directory(&args.data_dir)
         .with_anl_module(module)
         .with_num_threads(args.threads);
     if let Some(method) = args.file_method {
         anl = anl.with_file_read_method(method);
     }
-    anl
-        .run();
+    anl.run();
 }
