@@ -1,6 +1,6 @@
 use clap::Parser;
-use ebooa::anl_module::Anl;
-use ebooa::anl_module::AnlModule;
+use ebooa::anl_module::AnlMT;
+use ebooa::anl_module::AnlModuleMT;
 use ebooa::anl_module::FileReadMethod;
 use ebooa::example_event::MyEvent;
 use indicatif::ParallelProgressIterator;
@@ -19,7 +19,7 @@ pub struct Res {
     pub momentum: f64,
 }
 
-impl AnlModule<MyEvent, Res> for TestAnlMod {
+impl AnlModuleMT<MyEvent, Res> for TestAnlMod {
     fn name(&self) -> String {
         String::from("test")
     }
@@ -117,7 +117,7 @@ fn main() {
 
     // read back files ... this is the stuff we are trying to make very very fast
     let module = TestAnlMod::default();
-    let mut anl = Anl::<MyEvent, Res>::new()
+    let mut anl = AnlMT::<MyEvent, Res>::new()
         .with_input_directory(&args.data_dir)
         .with_anl_module(module)
         .with_num_threads(args.threads);

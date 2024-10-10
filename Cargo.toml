@@ -13,3 +13,4 @@ rayon = "1.10.0"
 rkyv = { version = "0.7.44", features = ["validation"] }
 rkyv_impl = "0.2.2"
 thousands = "0.2.0"
+
