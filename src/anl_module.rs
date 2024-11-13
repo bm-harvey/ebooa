@@ -1,4 +1,4 @@
-use crate::data_set::{DataFileCollection, DataSet};
+use crate::data_set::{DataFileCollection, DataSet, DataSetCollection};
 use colored::Colorize;
 use indicatif::{MultiProgress, ProgressBar};
 use memmap2::Mmap;
@@ -56,6 +56,14 @@ pub trait AnlModuleMT<E: Archive, R>: Send + Sync {
     fn finalize(&mut self, _output_directory: Option<&Path>) {}
 }
 
+pub trait EventGenerator<E: Archive> {
+    fn name(&mut self) -> String {
+        String::from("mix")
+    }
+    fn initialize(&mut self, _full_data_set: &DataSetCollection<E>) {}
+    fn get_event(&mut self) -> E;
+}
+
 type ImplAnlMod<E, R> = Option<Arc<RwLock<Box<dyn AnlModuleMT<E, R>>>>>;
 pub struct AnlMT<E: Archive, R> {
     /// The analysis scripts used to analyze the generated events
@@ -75,6 +83,7 @@ pub struct AnlMT<E: Archive, R> {
     max_events: Option<usize>,
     //
     file_read_method: Option<FileReadMethod>,
+    chunk_size: usize,
 }
 
 impl<E: Archive, R> Default for AnlMT<E, R> {
@@ -94,6 +103,7 @@ impl<E: Archive, R> AnlMT<E, R> {
             update_interval: 10_000,
             threads: std::thread::available_parallelism().unwrap().get(),
             file_read_method: None,
+            chunk_size: 1_000_000,
         }
     }
     /// Add an anlsysis module to use for the unmixed data. These analysis modules are not
@@ -206,7 +216,7 @@ where
             Some(ref s) => s,
         };
 
-        let mut final_index = 10_000_000;
+        let mut final_index = self.chunk_size;
 
         let file_set = DataFileCollection::new_from_path(in_dir);
         let data_set = file_set.datasets::<E>();
@@ -216,7 +226,7 @@ where
             data_set.len()
         };
         while final_index < total_events - 1 {
-            final_index += 10_000_000;
+            final_index += self.chunk_size;
             let result_chunk = match final_file_method {
                 FileReadMethod::Mmap => {
                     let anl = anl_module.read().expect("Failed to get read lock");
@@ -251,8 +261,8 @@ where
                         results.lock().unwrap().push(result);
                     };
 
-                    let chunk_size = 10_000_000 / num_threads;
-                    let remainder = 10_000_000 % num_threads;
+                    let chunk_size = self.chunk_size / num_threads;
+                    let remainder = self.chunk_size % num_threads;
 
                     std::thread::scope(|s| {
                         let mut start = final_index;
@@ -483,6 +493,9 @@ pub trait AnlModule<E: Archive>: Send + Sync {
 pub struct Anl<E: Archive> {
     /// The analysis scripts used to analyze the generated events
     anl_module: Option<RefCell<Box<dyn AnlModule<E>>>>,
+    ///
+    event_generator: Option<RefCell<Box<dyn EventGenerator<E>>>>,
+
     /// Where to find the actual input data. This value needs to get set manually, otherwise
     /// `run_analysis` will panic.
     input_directory: Option<PathBuf>,
@@ -490,6 +503,10 @@ pub struct Anl<E: Archive> {
     /// location, using the `self.mixer.name()` as the subdirectory name. This value needs to get
     /// set manually, otherwise `run_analysis` will panic.
     output_directory: Option<PathBuf>,
+
+    ///
+    chunk_size: usize,
+
     //
     update_interval: usize,
     //
@@ -517,6 +534,8 @@ impl<E: Archive> Anl<E> {
             update_interval: 10_000,
             threads: std::thread::available_parallelism().unwrap().get(),
             file_read_method: None,
+            chunk_size: 1_000_000,
+            event_generator: None,
         }
     }
     /// Add an anlsysis module to use for the unmixed data. These analysis modules are not
@@ -528,9 +547,20 @@ impl<E: Archive> Anl<E> {
         self
     }
 
+    pub fn with_event_generator(mut self, generator: impl EventGenerator<E> + 'static) -> Self {
+        let generator: RefCell<Box<dyn EventGenerator<E>>> = RefCell::new(Box::new(generator));
+        self.event_generator = Some(generator);
+        self
+    }
+
     /// A directory containing the raw `rkyv::Archived` data.
     pub fn with_input_directory(mut self, input: &str) -> Self {
         self.input_directory = Some(Path::new(input).to_path_buf());
+        self
+    }
+
+    pub fn with_chunk_size(mut self, size: usize) -> Self {
+        self.chunk_size = size;
         self
     }
 
@@ -598,6 +628,102 @@ where
     <E as Archive>::Archived: Deserialize<E, rkyv::Infallible>,
 {
     pub fn run(&mut self) {
+        if self.event_generator.is_none() {
+            self.run_real();
+        } else {
+            self.run_mixed();
+        }
+    }
+
+    pub fn run_mixed(&mut self) {
+        let global_timer = std::time::Instant::now();
+        let in_dir = if let Some(path) = self.input_directory() {
+            path
+        } else {
+            panic!("No input directory")
+        };
+
+        Anl::<E>::make_announcment("INITIALIZE");
+        let now = std::time::Instant::now();
+
+        if self.anl_module.is_none() {
+            Anl::<E>::make_announcment("NO MODULE ATTACHED");
+            return;
+        }
+        if self.event_generator.is_none() {
+            Anl::<E>::make_announcment("NO EVENT GENERATOR ATTACHED)");
+            return;
+        }
+
+        self.anl_module
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .initialize(self.output_directory());
+
+        let file_set = DataFileCollection::new_from_path(in_dir);
+        let data_set = file_set.datasets::<E>();
+
+        self.event_generator
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .initialize(&data_set);
+
+        println!("Initialize took {}s", now.elapsed().as_secs_f64());
+        let now = std::time::Instant::now();
+
+        Anl::<E>::make_announcment("EVENT LOOP");
+
+        let total_events = if let Some(size) = self.max_events {
+            size
+        } else {
+            data_set.len()
+        };
+
+        let pb = ProgressBar::new(total_events as u64);
+
+        let mut start_index = 0;
+        let mut final_index = self.chunk_size;
+        while start_index < total_events - 1 {
+            final_index = final_index.min(total_events);
+            let mut anl_module = self.anl_module.as_ref().unwrap().borrow_mut();
+            let mut event_generator = self.event_generator.as_ref().unwrap().borrow_mut();
+
+            for idx in start_index..final_index {
+                let event = event_generator.get_event();
+                anl_module.analyze_event(event, idx + start_index);
+                pb.inc(1);
+            }
+
+            start_index = final_index;
+            final_index += self.chunk_size;
+            anl_module.post_chunk(self.output_directory());
+        }
+        pb.finish();
+
+        println!("Event loop took {}s", now.elapsed().as_secs_f64());
+
+        Anl::<E>::make_announcment("HANDLE RESULTS");
+        println!("Result handling took {}s", now.elapsed().as_secs_f64());
+
+        Anl::<E>::make_announcment("FINALIZE");
+
+        let now = std::time::Instant::now();
+
+        self.anl_module
+            .as_ref()
+            .unwrap()
+            .borrow_mut()
+            .finalize(self.output_directory());
+
+        println!("Finalizing took {}s", now.elapsed().as_secs_f64());
+
+        Anl::<E>::make_announcment("DONE");
+        println!("Anl took {}s", global_timer.elapsed().as_secs_f64());
+    }
+
+    pub fn run_real(&mut self) {
         let global_timer = std::time::Instant::now();
         let in_dir = if let Some(path) = self.input_directory() {
             path
@@ -619,14 +745,8 @@ where
             .borrow_mut()
             .initialize(self.output_directory());
 
-        println!("Initialize took {}s", now.elapsed().as_secs_f64());
-
-        Anl::<E>::make_announcment("EVENT LOOP");
-
-        let now = std::time::Instant::now();
-
         let mut start_index = 0;
-        let mut final_index = 10_000_000;
+        let mut final_index = self.chunk_size;
 
         let file_set = DataFileCollection::new_from_path(in_dir);
         let data_set = file_set.datasets::<E>();
@@ -636,6 +756,11 @@ where
         } else {
             data_set.len()
         };
+
+        println!("Initialize took {}s", now.elapsed().as_secs_f64());
+        let now = std::time::Instant::now();
+
+        Anl::<E>::make_announcment("EVENT LOOP");
 
         let pb = ProgressBar::new(total_events as u64);
 
@@ -651,15 +776,12 @@ where
                 pb.inc(1);
             }
             start_index = final_index;
-            final_index += 10_000_000;
+            final_index += self.chunk_size;
             anl_module.post_chunk(self.output_directory());
         }
         pb.finish();
 
         println!("Event loop took {}s", now.elapsed().as_secs_f64());
-
-        Anl::<E>::make_announcment("HANDLE RESULTS");
-        println!("Result handling took {}s", now.elapsed().as_secs_f64());
 
         Anl::<E>::make_announcment("FINALIZE");
 
