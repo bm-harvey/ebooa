@@ -8,6 +8,7 @@ clap = { version = "4.5.11", features = ["derive"] }
 colored = "2.1.0"
 indicatif = { version = "0.17.8", features = ["improved_unicode", "rayon"] }
 memmap2 = "0.9.4"
+polars = { version = "0.44.2", features = ["parquet"] }
 rand = "0.8.5"
 rayon = "1.10.0"
 rkyv = { version = "0.7.44", features = ["validation"] }

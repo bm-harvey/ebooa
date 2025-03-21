@@ -1,16 +1,10 @@
-#![allow(unused_imports)]
-#![allow(dead_code)]
 use memmap2::Mmap;
 use rand::Rng;
 use rkyv::validation::validators::DefaultValidator;
 use rkyv::{archived_root, check_archived_root, Archived};
 use rkyv::{Archive, CheckBytes, Deserialize, Serialize};
 use std::fs::File;
-use std::marker::PhantomData;
 use std::path::Path;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::RwLock;
 //use rkyv::{Archive, Deserialize, Serialize};
 
 #[derive(Archive, Deserialize, Serialize)]
@@ -59,7 +53,7 @@ where
 }
 
 impl<'a, E> DataSet<E> {
-    pub fn validated_read_from_rkyv(bytes: &'a [u8]) -> &rkyv::Archived<Self>
+    pub fn validated_read_from_rkyv(bytes: &'a [u8]) -> &'a rkyv::Archived<Self>
     where
         E: Archive,
         Archived<E>: CheckBytes<DefaultValidator<'a>>,
@@ -180,7 +174,7 @@ impl DataFileCollection {
 
         DataSetCollection {
             data_sets,
-            num_accumulated_events,
+            //num_accumulated_events,
         }
     }
 }
@@ -190,7 +184,7 @@ where
     E: Archive,
 {
     data_sets: Vec<&'a ArchivedDataSet<E>>,
-    num_accumulated_events: Vec<usize>,
+    //num_accumulated_events: Vec<usize>,
 }
 
 impl<'a, E> DataSetCollection<'a, E>

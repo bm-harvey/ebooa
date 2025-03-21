@@ -434,7 +434,7 @@ where
 /// The generic form of an event based analysis module. An `Analysis` or `MixedAnalysis` can take in one or more of
 /// these modules and manage the calling of all of these functions for you in a systematic way, or
 /// one could use `AnalysisModule`s on their own right for organizational purposes.
-pub trait AnlModule<E: Archive>: Send + Sync {
+pub trait AnlModule<E: Archive> {
     /// Required name of the module, can be used for naming outputs or keeping track of outputs
     fn name(&self) -> String {
         String::from("anl")
