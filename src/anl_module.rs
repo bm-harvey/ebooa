@@ -61,7 +61,7 @@ pub trait EventGenerator<E: Archive> {
         String::from("mix")
     }
     fn initialize(&mut self, _full_data_set: &DataSetCollection<E>) {}
-    fn get_event(&mut self) -> E;
+    fn get_event(&mut self) -> Option<E>;
 }
 
 type ImplAnlMod<E, R> = Option<Arc<RwLock<Box<dyn AnlModuleMT<E, R>>>>>;
@@ -690,10 +690,14 @@ where
             let mut anl_module = self.anl_module.as_ref().unwrap().borrow_mut();
             let mut event_generator = self.event_generator.as_ref().unwrap().borrow_mut();
 
-            for idx in start_index..final_index {
+            let mut idx = start_index;
+            while idx < final_index {
                 let event = event_generator.get_event();
-                anl_module.analyze_event(event, idx + start_index);
-                pb.inc(1);
+                if event.is_some() {
+                    anl_module.analyze_event(event.unwrap(), idx + start_index);
+                    pb.inc(1);
+                    idx += 1;
+                }
             }
 
             start_index = final_index;
@@ -748,6 +752,7 @@ where
         let mut start_index = 0;
         let mut final_index = self.chunk_size;
 
+        dbg!();
         let file_set = DataFileCollection::new_from_path(in_dir);
         let data_set = file_set.datasets::<E>();
 

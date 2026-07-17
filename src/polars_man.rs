@@ -26,7 +26,7 @@ impl<T> TypedColumnData<T> {
     }
 
     //fn fill(&mut self) {
-        //self.column.push(self.handle.take());
+    //self.column.push(self.handle.take());
     //}
 
     pub fn set_val(&mut self, val: T) {
@@ -41,15 +41,15 @@ impl<T> TypedColumnData<T> {
     }
 
     //fn iter(&self) -> std::slice::Iter<Option<T>> {
-        //self.column.iter()
+    //self.column.iter()
     //}
 
     //fn iter_mut(&mut self) -> std::slice::IterMut<Option<T>> {
-        //self.column.iter_mut()
+    //self.column.iter_mut()
     //}
 
     //fn into_iter(self) -> std::vec::IntoIter<Option<T>> {
-        //self.column.into_iter()
+    //self.column.into_iter()
     //}
 
     fn len(&self) -> usize {
@@ -163,6 +163,18 @@ impl ManagedDataFrame {
             0
         }
     }
+
+    pub fn print_columns(&self) {
+        for col in self.columns.iter() {
+            println!("col : {}", col.borrow().name());
+        }
+    }
+
+    pub fn clear(&mut self){
+        for col in self.columns.iter_mut(){
+            col.borrow_mut().clear();
+        }
+    } 
 
     pub fn write_to_parquet(&self, path: &str) {
         let mut df = self.df();

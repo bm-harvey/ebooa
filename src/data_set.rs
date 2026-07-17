@@ -132,12 +132,32 @@ impl DataFileCollection {
     }
 
     pub fn new_from_path(directory: &Path) -> Self {
+        dbg!();
         let mut mmaps = Vec::new();
 
-        let paths = std::fs::read_dir(directory).expect("problem opening input directory");
-        for path in paths {
-            let path = path.expect("Ivalid path").path();
+        let mut paths = std::fs::read_dir(directory)
+            .expect("problem opening input directory")
+            .map(|path| path.unwrap().path())
+            .collect::<Vec<_>>();
 
+        if paths
+            .iter()
+            .map(|path| String::from(path.to_str().unwrap()))
+            .all(|path| path.starts_with("run_"))
+        {
+            paths.sort_by_key(|path| {
+                let run_idx = path
+                    .to_str()
+                    .unwrap()
+                    .chars()
+                    .filter(|c| c.is_numeric())
+                    .collect::<String>();
+
+                run_idx.parse::<usize>().unwrap()
+            })
+        }
+
+        for path in paths {
             let path_name = path
                 .to_str()
                 .expect("Path could not be interpretted as str");
@@ -243,6 +263,15 @@ impl<'a, E: Archive> ArchivedDataCollectionIter<'a, E> {
             data_set_idx: 0,
             idx: 0,
         }
+    }
+}
+
+impl<'a, E> ExactSizeIterator for ArchivedDataCollectionIter<'a, E>
+where
+    E: Archive,
+{
+    fn len(&self) -> usize {
+        self.data.len()
     }
 }
 
